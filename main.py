@@ -29,35 +29,124 @@ class BasePlayer(ABC):
 class DefaultPlayer(BasePlayer):
     """
     Implementação padrão do jogador.
-    Se não estiver carregando pacotes (cargo == 0), escolhe o pacote mais próximo.
-    Caso contrário, escolhe a meta (entrega) mais próxima.
+    Coleta todos os pacotes primeiro (usando rota otimizada com A*),
+    depois entrega todos (usando rota otimizada com A*).
     """
-    def escolher_alvo(self, world):
-        sx, sy = self.position
-        # Se não estiver carregando pacote e houver pacotes disponíveis:
-        if self.cargo == 0 and world.packages:
-            best = None
-            best_dist = float('inf')
-            for pkg in world.packages:
-                d = abs(pkg[0] - sx) + abs(pkg[1] - sy)
-                if d < best_dist:
-                    best_dist = d
-                    best = pkg
-            return best
-        else:
-            # Se estiver carregando ou não houver mais pacotes, vai para a meta de entrega (se existir)
-            if world.goals:
-                best = None
-                best_dist = float('inf')
-                for goal in world.goals:
-                    d = abs(goal[0] - sx) + abs(goal[1] - sy)
-                    if d < best_dist:
-                        best_dist = d
-                        best = goal
-                return best
+    def __init__(self, position):
+        super().__init__(position)
+        self.collection_phase = True  # Fase de coleta (True) ou entrega (False)
+        self.full_path = []           # Caminho completo a ser seguido
+        self.current_target_index = 0 # Índice do alvo atual no caminho
+        self.need_replan = True       # Flag para indicar quando replanejar
+        
+    def find_optimal_route(self, points, world):
+        """Encontra a rota mais curta que visita todos os pontos usando heurística de vizinho mais próximo"""
+        if not points:
+            return []
+            
+        # Começa na posição atual do jogador
+        current_pos = self.position
+        unvisited = points.copy()
+        route = []
+        
+        while unvisited:
+            # Encontra o ponto mais próximo do ponto atual
+            nearest = min(unvisited, key=lambda p: self.heuristic(current_pos, p))
+            # Calcula o caminho até ele
+            path = self.astar(current_pos, nearest, world)
+            if not path:
+                break
+            # Adiciona ao caminho total (exceto a primeira posição que é a atual)
+            route.extend(path)
+            # Atualiza a posição atual
+            current_pos = nearest
+            # Remove o ponto da lista de não visitados
+            unvisited.remove(nearest)
+            
+        return route
+    
+    def heuristic(self, a, b):
+        """Distância de Manhattan"""
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        
+    def astar(self, start, goal, world):
+        """Algoritmo A* para encontrar caminho entre dois pontos"""
+        maze = world.map
+        size = world.maze_size
+        neighbors = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        close_set = set()
+        came_from = {}
+        gscore = {tuple(start): 0}
+        fscore = {tuple(start): self.heuristic(start, goal)}
+        oheap = []
+        heapq.heappush(oheap, (fscore[tuple(start)], tuple(start)))
+        
+        while oheap:
+            current = heapq.heappop(oheap)[1]
+            if list(current) == goal:
+                data = []
+                while current in came_from:
+                    data.append(list(current))
+                    current = came_from[current]
+                data.reverse()
+                return data
+                
+            close_set.add(current)
+            for dx, dy in neighbors:
+                neighbor = (current[0] + dx, current[1] + dy)
+                tentative_g = gscore[current] + 1
+                if 0 <= neighbor[0] < size and 0 <= neighbor[1] < size:
+                    if maze[neighbor[1]][neighbor[0]] == 1:
+                        continue
+                else:
+                    continue
+                    
+                if neighbor in close_set and tentative_g >= gscore.get(neighbor, 0):
+                    continue
+                    
+                if tentative_g < gscore.get(neighbor, float('inf')) or neighbor not in [i[1] for i in oheap]:
+                    came_from[neighbor] = current
+                    gscore[neighbor] = tentative_g
+                    fscore[neighbor] = tentative_g + self.heuristic(neighbor, goal)
+                    heapq.heappush(oheap, (fscore[neighbor], neighbor))
+        return []
+    
+    def escolher_alvo(self, world):            
+        # Se estamos na fase de coleta e pegamos todos os pacotes, muda para fase de entrega
+        if self.collection_phase and not world.packages and self.cargo > 0:
+            print("Todos os pacotes coletados. Mudando para fase de entrega.")
+            self.collection_phase = False
+            self.need_replan = True
+            return self.escolher_alvo(world)
+        # Se precisamos replanejar ou não temos um caminho planejado
+        elif self.need_replan or not self.full_path or self.current_target_index >= len(self.full_path):
+            # Fase de coleta - pegar todos os pacotes
+            if self.collection_phase and world.packages:
+                print("Planejando rota de coleta...")
+                self.full_path = self.find_optimal_route(world.packages.copy(), world)
+                self.current_target_index = 0
+                self.need_replan = False
+                if not self.full_path:
+                    return None
+            # Fase de entrega - entregar todos os pacotes
+            elif not self.collection_phase and world.goals and self.cargo > 0:
+                print("Planejando rota de entrega...")
+                self.full_path = self.find_optimal_route(world.goals.copy(), world)
+                self.current_target_index = 0
+                self.need_replan = False
+                if not self.full_path:
+                    return None
             else:
                 return None
 
+            
+        # Retorna o próximo alvo no caminho planejado
+        if self.current_target_index < len(self.full_path):
+            target = self.full_path[self.current_target_index]
+            self.current_target_index += 1
+            return target
+            
+        return None
 # ==========================
 # CLASSE WORLD (MUNDO)
 # ==========================
@@ -248,7 +337,7 @@ class Maze:
         self.running = True
         self.score = 0
         self.steps = 0
-        self.delay = 100  # milissegundos entre movimentos
+        self.delay = 50 # milissegundos entre movimentos
         self.path = []
         self.num_deliveries = 0  # contagem de entregas realizadas
 
@@ -295,91 +384,85 @@ class Maze:
 
     def game_loop(self):
         while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    return
+
             if self.num_deliveries >= self.world.total_items:
                 self.running = False
                 break
 
-            target = self.world.player.escolher_alvo(self.world)
-            if target is None:
-                self.running = False
-                break
-
-            # Caminho direto para o alvo
-            path_to_target = self.astar(self.world.player.position, target)
-            if not path_to_target:
-                print("Nenhum caminho encontrado para o alvo", target)
-                self.running = False
-                break
-
-            custo_ate_alvo = len(path_to_target)
-            if custo_ate_alvo > self.world.player.battery:
-                # Precisa ir carregar antes
+            # Verifica se há bateria suficiente para o próximo movimento
+            if self.world.player.battery <= 0:
                 if self.world.recharger:
                     path_to_recharger = self.astar(self.world.player.position, self.world.recharger)
-                    if not path_to_recharger or len(path_to_recharger) > self.world.player.battery:
-                        print("Não há bateria suficiente para chegar ao carregador.")
+                    if path_to_recharger:
+                        print("Indo para o carregador - bateria crítica!")
+                        for pos in path_to_recharger:
+                            self.world.player.position = pos
+                            self.steps += 1
+                            self.world.player.battery -= 1
+                            self.score -= 1 if self.world.player.battery >= 0 else 5
+                            if pos == self.world.recharger:
+                                self.world.player.battery = 60
+                                print("Bateria recarregada!")
+                                # Após recarregar, precisa replanejar
+                                self.world.player.need_replan = True
+                            self.world.draw_world(path_to_recharger)
+                            pygame.time.wait(self.delay)
+                        continue
+                    else:
+                        print("Não há caminho para o carregador!")
                         self.running = False
                         break
-
-                    print("Indo para o carregador antes do alvo.")
-                    for pos in path_to_recharger:
-                        self.world.player.position = pos
-                        self.steps += 1
-                        self.world.player.battery -= 1
-                        if self.world.player.battery >= 0:
-                            self.score -= 1
-                        else:
-                            self.score -= 5
-                        if pos == self.world.recharger:
-                            self.world.player.battery = 60
-                            print("Bateria recarregada!")
-                        self.world.draw_world(path_to_recharger)
-                        pygame.time.wait(self.delay)
                 else:
-                    print("Sem recarregador disponível no mapa.")
+                    print("Sem recarregador disponível!")
                     self.running = False
                     break
 
-            # Caminho final até o alvo (após carregar, se necessário)
-            self.path = self.astar(self.world.player.position, target)
-            if not self.path:
-                print("Nenhum caminho encontrado para o alvo", target)
+            target = self.world.player.escolher_alvo(self.world)
+            if target is None:
+                if not self.world.packages and not self.world.goals and self.world.player.cargo == 0:
+                    print("Missão completa! Todos os pacotes foram entregues.")
+                else:
+                    print("Sem alvo disponível mas missão não concluída.")
                 self.running = False
                 break
 
-            for pos in self.path:
-                self.world.player.position = pos
+            # Move para o próximo alvo no caminho planejado
+            next_pos = target
+            if self.world.can_move_to(next_pos):
+                self.world.player.position = next_pos
                 self.steps += 1
                 self.world.player.battery -= 1
-                if self.world.player.battery >= 0:
-                    self.score -= 1
-                else:
-                    self.score -= 5
-                if self.world.recharger and pos == self.world.recharger:
-                    self.world.player.battery = 60
-                    print("Bateria recarregada!")
-                self.world.draw_world(self.path)
-                pygame.time.wait(self.delay)
-
-            # Ao chegar no alvo
-            if self.world.player.position == target:
-                if target in self.world.packages:
+                self.score -= 1 if self.world.player.battery >= 0 else 5
+                
+                # Verifica se chegou em um pacote ou meta
+                if next_pos in self.world.packages and self.world.player.collection_phase:
                     self.world.player.cargo += 1
-                    self.world.packages.remove(target)
-                    print("Pacote coletado em", target, "Cargo agora:", self.world.player.cargo)
-                elif target in self.world.goals and self.world.player.cargo > 0:
+                    self.world.packages.remove(next_pos)
+                    self.world.player.need_replan = True  # Precisa replanejar após pegar pacote
+                    print("Pacote coletado em", next_pos, "Cargo agora:", self.world.player.cargo)
+                elif next_pos in self.world.goals and not self.world.player.collection_phase and self.world.player.cargo > 0:
                     self.world.player.cargo -= 1
                     self.num_deliveries += 1
-                    self.world.goals.remove(target)
+                    self.world.goals.remove(next_pos)
+                    self.world.player.need_replan = True  # Precisa replanejar após entregar pacote
                     self.score += 50
-                    print("Pacote entregue em", target, "Cargo agora:", self.world.player.cargo)
+                    print("Pacote entregue em", next_pos, "Cargo agora:", self.world.player.cargo)
+                elif next_pos == self.world.recharger:
+                    self.world.player.battery = 60
+                    self.world.player.need_replan = True  # Precisa replanejar após recarregar
+                    print("Bateria recarregada!")
+                    
+                self.world.draw_world([next_pos])
+                pygame.time.wait(self.delay)
 
             print(f"Passos: {self.steps}, Pontuação: {self.score}, Cargo: {self.world.player.cargo}, Bateria: {self.world.player.battery}, Entregas: {self.num_deliveries}")
 
         print("Fim de jogo!")
         print("Pontuação final:", self.score)
-        print("Total de passos:", self.steps)
-        pygame.quit()
 
 # ==========================
 # PONTO DE ENTRADA PRINCIPAL
