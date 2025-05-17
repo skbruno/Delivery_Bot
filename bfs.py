@@ -57,7 +57,7 @@ class DefaultPlayer(BasePlayer):
             # Encontra o ponto mais próximo do ponto atual
             nearest = min(unvisited, key=lambda p: world.maze.heuristic(current_pos, p))
             # Calcula o caminho até ele usando o A* do Maze
-            path = world.maze.astar(current_pos, nearest)
+            path = world.maze.greedy_bfs(current_pos, nearest)
             if not path:
                 break
             # Adiciona ao caminho total (exceto a primeira posição que é a atual)
@@ -335,42 +335,42 @@ class Maze:
         # Distância de Manhattan
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def astar(self, start, goal):
+    def greedy_bfs(self, start, goal):
+        """Algoritmo Greedy Best-First Search para encontrar caminho entre dois pontos"""
         maze = self.world.map
         size = self.world.maze_size
         neighbors = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-        close_set = set()
+        visited = set()
         came_from = {}
-        gscore = {tuple(start): 0}
-        fscore = {tuple(start): self.heuristic(start, goal)}
-        oheap = []
-        heapq.heappush(oheap, (fscore[tuple(start)], tuple(start)))
-        while oheap:
-            current = heapq.heappop(oheap)[1]
+        heap = []
+        
+        heapq.heappush(heap, (self.heuristic(start, goal), tuple(start)))
+        visited.add(tuple(start))
+        
+        while heap:
+            _, current = heapq.heappop(heap)
+            
             if list(current) == goal:
-                data = []
+                # Reconstruir o caminho
+                path = []
                 while current in came_from:
-                    data.append(list(current))
+                    path.append(list(current))
                     current = came_from[current]
-                data.reverse()
-                return data
-            close_set.add(current)
+                path.reverse()
+                return path
+                
             for dx, dy in neighbors:
                 neighbor = (current[0] + dx, current[1] + dy)
-                tentative_g = gscore[current] + 1
-                if 0 <= neighbor[0] < size and 0 <= neighbor[1] < size:
-                    if maze[neighbor[1]][neighbor[0]] == 1:
-                        continue
-                else:
-                    continue
-                if neighbor in close_set and tentative_g >= gscore.get(neighbor, 0):
-                    continue
-                if tentative_g < gscore.get(neighbor, float('inf')) or neighbor not in [i[1] for i in oheap]:
+                
+                if (0 <= neighbor[0] < size and 0 <= neighbor[1] < size and
+                    maze[neighbor[1]][neighbor[0]] == 0 and
+                    neighbor not in visited):
+                    
+                    visited.add(neighbor)
                     came_from[neighbor] = current
-                    gscore[neighbor] = tentative_g
-                    fscore[neighbor] = tentative_g + self.heuristic(neighbor, goal)
-                    heapq.heappush(oheap, (fscore[neighbor], neighbor))
-        return []
+                    heapq.heappush(heap, (self.heuristic(neighbor, goal), neighbor))
+        
+        return []  # Se não encontrar caminho
 
     def update_stats(self):
         self.stats['steps'].append(self.steps)
@@ -394,7 +394,7 @@ class Maze:
             # Verifica se há bateria suficiente para o próximo movimento
             if self.world.player.battery <= 0:
                 if self.world.recharger:
-                    path_to_recharger = self.astar(self.world.player.position, self.world.recharger)
+                    path_to_recharger = self.greedy_bfs(self.world.player.position, self.world.recharger)
                     if path_to_recharger:
                         print("Indo para o carregador - bateria crítica!")
                         for pos in path_to_recharger:
@@ -442,18 +442,18 @@ class Maze:
                 if next_pos in self.world.packages and self.world.player.collection_phase:
                     self.world.player.cargo += 1
                     self.world.packages.remove(next_pos)
-                    self.world.player.need_replan = True  # Precisa replanejar após pegar pacote
+                    self.world.player.need_replan = True
                     print("Pacote coletado em", next_pos, "Cargo agora:", self.world.player.cargo)
                 elif next_pos in self.world.goals and not self.world.player.collection_phase and self.world.player.cargo > 0:
                     self.world.player.cargo -= 1
                     self.num_deliveries += 1
                     self.world.goals.remove(next_pos)
-                    self.world.player.need_replan = True  # Precisa replanejar após entregar pacote
+                    self.world.player.need_replan = True
                     self.score += 50
                     print("Pacote entregue em", next_pos, "Cargo agora:", self.world.player.cargo)
                 elif next_pos == self.world.recharger:
                     self.world.player.battery = 60
-                    self.world.player.need_replan = True  # Precisa replanejar após recarregar
+                    self.world.player.need_replan = True
                     print("Bateria recarregada!")
                     
                 if not self.headless:
@@ -508,7 +508,7 @@ def plot_results(results, num_simulations):
     fail_count = num_simulations - success_count
     plt.bar(['Sucesso', 'Falha'], [success_count, fail_count], color=['green', 'red'])
     plt.title(f'Taxa de Sucesso: {success_rate:.2f}%')
-    plt.ylabel('Entregas')
+    plt.ylabel('Número de Simulações')
     
     # Gráfico 4: Evolução das métricas em uma simulação típica
     plt.subplot(2, 2, 4)
@@ -541,7 +541,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--simulations",
         type=int,
-        default=50,
+        default=5,
         help="Número de simulações a serem executadas."
     )
     parser.add_argument(

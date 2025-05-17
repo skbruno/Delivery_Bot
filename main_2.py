@@ -32,73 +32,50 @@ class BasePlayer(ABC):
 
 class DefaultPlayer(BasePlayer):
     """
-    Implementação padrão do jogador.
-    Coleta todos os pacotes primeiro (usando rota otimizada com A*),
-    depois entrega todos (usando rota otimizada com A*).
+    Implementação modificada do jogador.
+    Coleta e entrega pacotes de forma mais eficiente, sem precisar coletar todos primeiro.
     """
     def __init__(self, position):
         super().__init__(position)
-        self.collection_phase = True  # Fase de coleta (True) ou entrega (False)
         self.full_path = []           # Caminho completo a ser seguido
         self.current_target_index = 0 # Índice do alvo atual no caminho
         self.need_replan = True       # Flag para indicar quando replanejar
         
-    def find_optimal_route(self, points, world):
-        """Encontra a rota mais curta que visita todos os pontos usando heurística de vizinho mais próximo"""
+    def find_nearest_point(self, points, world):
+        """Encontra o ponto mais próximo da posição atual"""
         if not points:
-            return []
+            return None
             
-        # Começa na posição atual do jogador
         current_pos = self.position
-        unvisited = points.copy()
-        route = []
-        
-        while unvisited:
-            # Encontra o ponto mais próximo do ponto atual
-            nearest = min(unvisited, key=lambda p: world.maze.heuristic(current_pos, p))
-            # Calcula o caminho até ele usando o A* do Maze
-            path = world.maze.astar(current_pos, nearest)
-            if not path:
-                break
-            # Adiciona ao caminho total (exceto a primeira posição que é a atual)
-            route.extend(path[1:])  # Note o [1:] para evitar duplicar a posição atual
-            # Atualiza a posição atual
-            current_pos = nearest
-            # Remove o ponto da lista de não visitados
-            unvisited.remove(nearest)
-            
-        return route
+        nearest = min(points, key=lambda p: world.maze.heuristic(current_pos, p))
+        return nearest
     
+    def find_path_to_nearest(self, points, world):
+        """Encontra o caminho para o ponto mais próximo"""
+        nearest = self.find_nearest_point(points, world)
+        if nearest is None:
+            return []
+        return world.maze.astar(self.position, nearest)
     
     def escolher_alvo(self, world):            
-        # Se estamos na fase de coleta e pegamos todos os pacotes, muda para fase de entrega
-        if self.collection_phase and not world.packages and self.cargo > 0:
-            print("Todos os pacotes coletados. Mudando para fase de entrega.")
-            self.collection_phase = False
-            self.need_replan = True
-            return self.escolher_alvo(world)
         # Se precisamos replanejar ou não temos um caminho planejado
-        elif self.need_replan or not self.full_path or self.current_target_index >= len(self.full_path):
-            # Fase de coleta - pegar todos os pacotes
-            if self.collection_phase and world.packages:
-                print("Planejando rota de coleta...")
-                self.full_path = self.find_optimal_route(world.packages.copy(), world)
-                self.current_target_index = 0
-                self.need_replan = False
-                if not self.full_path:
-                    return None
-            # Fase de entrega - entregar todos os pacotes
-            elif not self.collection_phase and world.goals and self.cargo > 0:
-                print("Planejando rota de entrega...")
-                self.full_path = self.find_optimal_route(world.goals.copy(), world)
-                self.current_target_index = 0
-                self.need_replan = False
-                if not self.full_path:
-                    return None
+        if self.need_replan or not self.full_path or self.current_target_index >= len(self.full_path):
+            # Se estiver carregando pacotes, prioriza entrega
+            if self.cargo > 0 and world.goals:
+                print("Planejando rota para entrega mais próxima...")
+                self.full_path = self.find_path_to_nearest(world.goals, world)
+            # Se não estiver carregando, coleta pacotes
+            elif world.packages:
+                print("Planejando rota para coleta mais próxima...")
+                self.full_path = self.find_path_to_nearest(world.packages, world)
             else:
                 return None
+                
+            self.current_target_index = 0
+            self.need_replan = False
+            if not self.full_path:
+                return None
 
-            
         # Retorna o próximo alvo no caminho planejado
         if self.current_target_index < len(self.full_path):
             target = self.full_path[self.current_target_index]
@@ -319,7 +296,7 @@ class Maze:
         self.running = True
         self.score = 0
         self.steps = 0
-        self.delay = 50 # milissegundos entre movimentos
+        self.delay = 750 # milissegundos entre movimentos
         self.path = []
         self.num_deliveries = 0  # contagem de entregas realizadas
         self.headless = headless  # Modo sem interface gráfica
@@ -439,12 +416,12 @@ class Maze:
                 self.score -= 1 if self.world.player.battery >= 0 else 5
                 
                 # Verifica se chegou em um pacote ou meta
-                if next_pos in self.world.packages and self.world.player.collection_phase:
+                if next_pos in self.world.packages:
                     self.world.player.cargo += 1
                     self.world.packages.remove(next_pos)
                     self.world.player.need_replan = True  # Precisa replanejar após pegar pacote
                     print("Pacote coletado em", next_pos, "Cargo agora:", self.world.player.cargo)
-                elif next_pos in self.world.goals and not self.world.player.collection_phase and self.world.player.cargo > 0:
+                elif next_pos in self.world.goals and self.world.player.cargo > 0:
                     self.world.player.cargo -= 1
                     self.num_deliveries += 1
                     self.world.goals.remove(next_pos)
@@ -508,7 +485,7 @@ def plot_results(results, num_simulations):
     fail_count = num_simulations - success_count
     plt.bar(['Sucesso', 'Falha'], [success_count, fail_count], color=['green', 'red'])
     plt.title(f'Taxa de Sucesso: {success_rate:.2f}%')
-    plt.ylabel('Entregas')
+    plt.ylabel('Número de Simulações')
     
     # Gráfico 4: Evolução das métricas em uma simulação típica
     plt.subplot(2, 2, 4)
@@ -547,6 +524,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--headless",
         action="store_true",
+        default= False,
         help="Executar em modo headless (sem interface gráfica)."
     )
     args = parser.parse_args()
